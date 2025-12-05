@@ -16,6 +16,25 @@ import {
     MessageSquare
 } from 'lucide-react';
 
+// Leaflet Imports
+import { MapContainer, TileLayer, Marker, useMapEvents } from 'react-leaflet';
+import 'leaflet/dist/leaflet.css';
+import L from 'leaflet';
+
+// Fix Leaflet Marker Icons
+try {
+    if (L.Icon && L.Icon.Default) {
+        delete L.Icon.Default.prototype._getIconUrl;
+        L.Icon.Default.mergeOptions({
+            iconRetinaUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.7.1/images/marker-icon-2x.png',
+            iconUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.7.1/images/marker-icon.png',
+            shadowUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.7.1/images/marker-shadow.png',
+        });
+    }
+} catch (e) {
+    console.warn("Leaflet icon fix skipped:", e);
+}
+
 // Firebase Imports
 import { initializeApp, getApps, getApp } from 'firebase/app';
 import {
@@ -47,7 +66,7 @@ const KITCHEN_LOCATION = {
     address: "Home Kitchen HQ"
 };
 
-const MAX_DELIVERY_RADIUS_KM = 10;
+const MAX_DELIVERY_RADIUS_KM = 30;
 
 const MENU_ITEMS = [
     { id: 1, name: "Standard Veg Thali", price: 120, desc: "Dal, Seasonal Veg, 4 Roti, Rice, Salad", veg: true },
@@ -409,6 +428,7 @@ function CustomerInterface({ db, userId, appId, customerPhone }) {
     const [address, setAddress] = useState('');
     const [placingOrder, setPlacingOrder] = useState(false);
     const [activeTab, setActiveTab] = useState('menu'); // menu, orders
+    const [showMap, setShowMap] = useState(false);
 
     // Geolocation Logic
     const checkLocation = () => {
@@ -419,24 +439,48 @@ function CustomerInterface({ db, userId, appId, customerPhone }) {
             return;
         }
 
+        const options = {
+            enableHighAccuracy: true,
+            timeout: 10000,
+            maximumAge: 0
+        };
+
         navigator.geolocation.getCurrentPosition(
             (position) => {
                 const { latitude, longitude } = position.coords;
-                const dist = calculateDistance(
-                    KITCHEN_LOCATION.lat,
-                    KITCHEN_LOCATION.lng,
-                    latitude,
-                    longitude
-                );
-                setLocation({ lat: latitude, lng: longitude });
-                setDistance(dist);
-                setIsLocating(false);
+                // console.log("Auto-Detect Precision:", position.coords.accuracy);
+                handleLocationSelect(latitude, longitude);
             },
             (error) => {
-                alert("Unable to retrieve your location. Please allow location access.");
+                alert("Unable to retrieve your location. Please use the Map option.");
                 setIsLocating(false);
-            }
+            },
+            options
         );
+    };
+
+    const handleLocationSelect = async (lat, lng) => {
+        const dist = calculateDistance(
+            KITCHEN_LOCATION.lat,
+            KITCHEN_LOCATION.lng,
+            lat,
+            lng
+        );
+        setLocation({ lat, lng });
+        setDistance(dist);
+        setIsLocating(false);
+        setShowMap(false);
+
+        // Reverse Geocoding (Get Address from Coords)
+        try {
+            const response = await fetch(`https://nominatim.openstreetmap.org/reverse?format=json&lat=${lat}&lon=${lng}`);
+            const data = await response.json();
+            if (data && data.display_name) {
+                setAddress(data.display_name);
+            }
+        } catch (error) {
+            console.error("Error fetching address:", error);
+        }
     };
 
     const addToCart = (item) => {
@@ -620,17 +664,28 @@ function CustomerInterface({ db, userId, appId, customerPhone }) {
                                                 <Navigation className="w-4 h-4" /> Delivery Check
                                             </h4>
 
-                                            {!location ? (
+                                            <div className="flex gap-2 mb-3">
                                                 <button
                                                     onClick={checkLocation}
                                                     disabled={isLocating}
-                                                    className="w-full py-2 bg-blue-100 text-blue-700 rounded-md text-sm font-medium hover:bg-blue-200 transition-colors flex items-center justify-center gap-2"
+                                                    className="flex-1 py-2 bg-blue-100 text-blue-700 rounded-md text-xs font-bold hover:bg-blue-200 transition-colors flex items-center justify-center gap-1"
                                                 >
-                                                    {isLocating ? <Loader2 className="w-4 h-4 animate-spin" /> : <MapPin className="w-4 h-4" />}
-                                                    Locate Me (Verify 10km)
+                                                    {isLocating ? <Loader2 className="w-3 h-3 animate-spin" /> : <MapPin className="w-3 h-3" />}
+                                                    Auto-Detect
                                                 </button>
-                                            ) : (
-                                                <div className="space-y-2">
+                                                <button
+                                                    onClick={() => {
+                                                        console.log("Map button clicked");
+                                                        setShowMap(true);
+                                                    }}
+                                                    className="flex-1 py-2 bg-orange-100 text-orange-700 rounded-md text-xs font-bold hover:bg-orange-200 transition-colors flex items-center justify-center gap-1"
+                                                >
+                                                    <MapPin className="w-3 h-3" /> Select on Map
+                                                </button>
+                                            </div>
+
+                                            {location && (
+                                                <div className="space-y-2 mb-2">
                                                     <div className="flex items-center justify-between text-xs">
                                                         <span className="text-gray-500">Distance to Kitchen:</span>
                                                         <span className="font-bold">{distance?.toFixed(1)} km</span>
@@ -674,6 +729,74 @@ function CustomerInterface({ db, userId, appId, customerPhone }) {
                     </div>
                 </div>
             )}
+
+            {/* Map Modal */}
+            {showMap && (
+                <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm">
+                    <div className="bg-white w-full max-w-2xl rounded-2xl overflow-hidden shadow-2xl flex flex-col h-[80vh]">
+                        <div className="p-4 bg-orange-600 text-white flex justify-between items-center">
+                            <h3 className="font-bold">Select Delivery Location</h3>
+                            <button onClick={() => setShowMap(false)} className="p-1 hover:bg-orange-700 rounded-full">
+                                <XCircle className="w-6 h-6" />
+                            </button>
+                        </div>
+                        <div className="flex-1 relative">
+                            <MapPicker
+                                center={location || KITCHEN_LOCATION}
+                                onConfirm={(lat, lng) => handleLocationSelect(lat, lng)}
+                            />
+                        </div>
+                        <div className="p-3 bg-gray-50 text-xs text-gray-500 text-center">
+                            Drag the marker or click on the map to pinpoint your location.
+                        </div>
+                    </div>
+                </div>
+            )}
+        </div>
+    );
+}
+
+
+// --- Map Picker Component ---
+function MapPicker({ center, onConfirm }) {
+    const [position, setPosition] = useState(center || KITCHEN_LOCATION);
+
+    function LocationMarker() {
+        const map = useMapEvents({
+            click(e) {
+                setPosition(e.latlng);
+                map.flyTo(e.latlng, map.getZoom());
+            },
+        });
+
+        return position === null ? null : (
+            <Marker
+                position={position}
+                draggable={true}
+                eventHandlers={{
+                    dragend: (e) => {
+                        setPosition(e.target.getLatLng());
+                    },
+                }}
+            />
+        );
+    }
+
+    return (
+        <div className="h-full w-full relative">
+            <MapContainer center={[center?.lat || KITCHEN_LOCATION.lat, center?.lng || KITCHEN_LOCATION.lng]} zoom={13} style={{ height: '100%', width: '100%' }}>
+                <TileLayer
+                    attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+                    url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+                />
+                <LocationMarker />
+            </MapContainer>
+            <button
+                onClick={() => onConfirm(position.lat, position.lng)}
+                className="absolute bottom-6 left-1/2 transform -translate-x-1/2 z-[1000] bg-orange-600 text-white px-8 py-3 rounded-full font-bold shadow-xl hover:bg-orange-700 hover:scale-105 transition-all flex items-center gap-2"
+            >
+                <CheckCircle className="w-5 h-5" /> Confirm Location
+            </button>
         </div>
     );
 }
