@@ -11,11 +11,13 @@ import {
     Loader2,
     Phone,
     Clock,
-    Menu as MenuIcon
+    Menu as MenuIcon,
+    ArrowRight,
+    MessageSquare
 } from 'lucide-react';
 
 // Firebase Imports
-import { initializeApp } from 'firebase/app';
+import { initializeApp, getApps, getApp } from 'firebase/app';
 import {
     getAuth,
     signInAnonymously,
@@ -38,11 +40,11 @@ import {
 // --- Configuration & Constants ---
 
 // Default Kitchen Location (Example: Central Delhi coordinates for demo)
-// You can change these to your specific kitchen coordinates
+// You can change these to your specific kitchen coordinates in the code below
 const KITCHEN_LOCATION = {
-    lat: 28.6139,
-    lng: 77.2090,
-    address: "123 Tiffin Central, Connaught Place, New Delhi"
+    lat: 28.5681,
+    lng: 77.3817,
+    address: "Home Kitchen HQ"
 };
 
 const MAX_DELIVERY_RADIUS_KM = 10;
@@ -81,6 +83,7 @@ export default function TiffinApp() {
     // State
     const [user, setUser] = useState(null);
     const [role, setRole] = useState(null); // 'admin' or 'customer'
+    const [customerPhone, setCustomerPhone] = useState(null); // Store phone number
     const [view, setView] = useState('login'); // login, app
     const [loading, setLoading] = useState(true);
 
@@ -93,8 +96,34 @@ export default function TiffinApp() {
     useEffect(() => {
         const initFirebase = async () => {
             try {
-                const firebaseConfig = JSON.parse(window.__firebase_config || '{}');
-                const app = initializeApp(firebaseConfig);
+                // --- FIREBASE CONFIGURATION LOGIC ---
+                // 1. Try to get the environment config (for this preview window)
+                const envConfig = window.__firebase_config ? JSON.parse(window.__firebase_config) : null;
+
+                // 2. Define your specific project config (for when you deploy to Vercel/Netlify)
+                const userConfig = {
+                    apiKey: "AIzaSyAqtnAEs0ztHVB0EcgpgUzWJeCmLKztpis",
+                    authDomain: "hometiffin-170a6.firebaseapp.com",
+                    projectId: "hometiffin-170a6",
+                    storageBucket: "hometiffin-170a6.firebasestorage.app",
+                    messagingSenderId: "916086810108",
+                    appId: "1:916086810108:web:2b8bfe82d096387b827e79",
+                    measurementId: "G-7N1H0BQ1Y1"
+                };
+
+                // 3. Select the valid config. 
+                // We prefer envConfig in this preview to prevent 'auth/configuration-not-found' errors 
+                // caused by domain restrictions or missing auth providers in the user's project console.
+                const firebaseConfig = envConfig || userConfig;
+
+                // Prevent multiple initializations error
+                let app;
+                if (!getApps().length) {
+                    app = initializeApp(firebaseConfig);
+                } else {
+                    app = getApp();
+                }
+
                 const authInstance = getAuth(app);
                 const dbInstance = getFirestore(app);
                 const currentAppId = window.__app_id || 'default-tiffin-app';
@@ -103,11 +132,25 @@ export default function TiffinApp() {
                 setDb(dbInstance);
                 setAppId(currentAppId);
 
-                // Auth Flow
-                if (window.__initial_auth_token) {
-                    await signInWithCustomToken(authInstance, window.__initial_auth_token);
-                } else {
-                    await signInAnonymously(authInstance);
+                // Robust Auth Flow with Fallback
+                try {
+                    // Priority 1: Custom Token (Provided by environment)
+                    if (window.__initial_auth_token) {
+                        try {
+                            await signInWithCustomToken(authInstance, window.__initial_auth_token);
+                        } catch (tokenError) {
+                            console.warn("Custom token auth failed, falling back to anonymous:", tokenError);
+                            await signInAnonymously(authInstance);
+                        }
+                    }
+                    // Priority 2: Anonymous Auth
+                    else {
+                        await signInAnonymously(authInstance);
+                    }
+                } catch (authError) {
+                    console.error("Authentication failed:", authError);
+                    // Don't stop loading here, let the UI handle the unauthenticated state if needed
+                    // or retry manually
                 }
 
                 const unsubscribe = onAuthStateChanged(authInstance, (u) => {
@@ -125,13 +168,15 @@ export default function TiffinApp() {
         initFirebase();
     }, []);
 
-    const handleLogin = (selectedRole) => {
+    const handleLogin = (selectedRole, phone = null) => {
         setRole(selectedRole);
+        if (phone) setCustomerPhone(phone);
         setView('app');
     };
 
     const handleLogout = () => {
         setRole(null);
+        setCustomerPhone(null);
         setView('login');
     };
 
@@ -140,7 +185,7 @@ export default function TiffinApp() {
             <div className="min-h-screen bg-orange-50 flex items-center justify-center">
                 <div className="text-center text-orange-600">
                     <Loader2 className="w-12 h-12 animate-spin mx-auto mb-4" />
-                    <p className="font-semibold">Loading Tiffin Services...</p>
+                    <p className="font-semibold">Loading HomeTiffin...</p>
                 </div>
             </div>
         );
@@ -161,20 +206,25 @@ export default function TiffinApp() {
                                 <ChefHat className="text-white w-6 h-6" />
                             </div>
                             <div>
-                                <h1 className="text-xl font-bold text-gray-900 tracking-tight">Home<span
-                                    className="text-orange-600">Tiffin</span></h1>
+                                <h1 className="text-xl font-bold text-gray-900 tracking-tight">Home<span className="text-orange-600">Tiffin</span></h1>
                                 <p className="text-xs text-gray-500 hidden sm:block">Homemade Goodness, Delivered</p>
                             </div>
                         </div>
 
                         <div className="flex items-center gap-4">
-                            <span
-                                className="px-3 py-1 bg-orange-100 text-orange-800 text-xs font-medium rounded-full uppercase tracking-wider">
+                            <span className="hidden sm:inline-block px-3 py-1 bg-orange-100 text-orange-800 text-xs font-medium rounded-full uppercase tracking-wider">
                                 {role === 'admin' ? 'Administrator' : 'Customer'} Mode
                             </span>
-                            <button onClick={handleLogout}
+                            {customerPhone && (
+                                <span className="text-xs font-bold text-gray-600 hidden md:block">
+                                    {customerPhone}
+                                </span>
+                            )}
+                            <button
+                                onClick={handleLogout}
                                 className="p-2 text-gray-500 hover:text-red-600 hover:bg-red-50 rounded-full transition-colors"
-                                title="Logout">
+                                title="Logout"
+                            >
                                 <LogOut className="w-5 h-5" />
                             </button>
                         </div>
@@ -185,7 +235,7 @@ export default function TiffinApp() {
             {/* Main Content */}
             <main className="max-w-7xl mx-auto p-4 sm:p-6 lg:p-8">
                 {role === 'customer' ? (
-                    <CustomerInterface db={db} userId={user?.uid} appId={appId} />
+                    <CustomerInterface db={db} userId={user?.uid} appId={appId} customerPhone={customerPhone} />
                 ) : (
                     <AdminInterface db={db} appId={appId} />
                 )}
@@ -196,13 +246,50 @@ export default function TiffinApp() {
 
 // --- Login Screen ---
 function LoginScreen({ onLogin }) {
+    const [mode, setMode] = useState('select'); // 'select', 'customer-phone', 'customer-otp'
+    const [phoneNumber, setPhoneNumber] = useState('');
+    const [otp, setOtp] = useState('');
+    const [isLoading, setIsLoading] = useState(false);
+
+    const handleSendOtp = (e) => {
+        e.preventDefault();
+        if (phoneNumber.length < 10) {
+            alert("Please enter a valid 10-digit mobile number");
+            return;
+        }
+        setIsLoading(true);
+        // Simulate API call delay
+        setTimeout(() => {
+            setIsLoading(false);
+            setMode('customer-otp');
+            // SIMULATED SMS
+            alert(`HomeTiffin: Your OTP is 1234`);
+        }, 1500);
+    };
+
+    const handleVerifyOtp = (e) => {
+        e.preventDefault();
+        if (otp === '1234') {
+            onLogin('customer', phoneNumber);
+        } else {
+            alert("Invalid OTP. Please try '1234'");
+        }
+    };
+
     return (
-        <div
-            className="min-h-screen bg-gradient-to-br from-orange-100 to-orange-50 flex flex-col justify-center items-center p-4">
-            <div className="bg-white p-8 rounded-2xl shadow-xl w-full max-w-md border border-orange-100">
-                <div className="text-center mb-8">
-                    <div
-                        className="bg-orange-500 w-16 h-16 rounded-2xl flex items-center justify-center mx-auto mb-4 shadow-lg rotate-3 transform hover:rotate-6 transition-transform">
+        <div className="min-h-screen bg-gradient-to-br from-orange-100 to-orange-50 flex flex-col justify-center items-center p-4">
+            <div className="bg-white p-8 rounded-2xl shadow-xl w-full max-w-md border border-orange-100 relative">
+                {mode !== 'select' && (
+                    <button
+                        onClick={() => { setMode('select'); setOtp(''); setPhoneNumber(''); }}
+                        className="absolute top-4 left-4 text-gray-400 hover:text-gray-600 text-xs font-bold uppercase tracking-wider"
+                    >
+                        ← Back
+                    </button>
+                )}
+
+                <div className="text-center mb-8 pt-4">
+                    <div className="bg-orange-500 w-16 h-16 rounded-2xl flex items-center justify-center mx-auto mb-4 shadow-lg rotate-3 transform hover:rotate-6 transition-transform">
                         <ChefHat className="text-white w-10 h-10" />
                     </div>
                     <h1 className="text-3xl font-bold text-gray-900 mb-2">Welcome to HomeTiffin</h1>
@@ -210,34 +297,97 @@ function LoginScreen({ onLogin }) {
                 </div>
 
                 <div className="space-y-4">
-                    <p className="text-sm font-medium text-gray-400 text-center uppercase tracking-widest mb-4">Select Interface
-                    </p>
 
-                    <button onClick={() => onLogin('customer')}
-                        className="w-full flex items-center p-4 bg-white border-2 border-orange-100 rounded-xl
-                hover:border-orange-500 hover:shadow-md transition-all group"
-                    >
-                        <div className="bg-orange-50 p-3 rounded-full mr-4 group-hover:bg-orange-500 transition-colors">
-                            <User className="w-6 h-6 text-orange-500 group-hover:text-white" />
-                        </div>
-                        <div className="text-left">
-                            <h3 className="font-bold text-gray-900">Customer Login</h3>
-                            <p className="text-xs text-gray-500">Order food, track delivery</p>
-                        </div>
-                    </button>
+                    {mode === 'select' && (
+                        <>
+                            <p className="text-sm font-medium text-gray-400 text-center uppercase tracking-widest mb-4">Select Interface</p>
 
-                    <button onClick={() => onLogin('admin')}
-                        className="w-full flex items-center p-4 bg-white border-2 border-gray-100 rounded-xl
-                hover:border-gray-800 hover:shadow-md transition-all group"
-                    >
-                        <div className="bg-gray-50 p-3 rounded-full mr-4 group-hover:bg-gray-800 transition-colors">
-                            <ShoppingBag className="w-6 h-6 text-gray-600 group-hover:text-white" />
-                        </div>
-                        <div className="text-left">
-                            <h3 className="font-bold text-gray-900">Administrator Login</h3>
-                            <p className="text-xs text-gray-500">Manage orders, check radius</p>
-                        </div>
-                    </button>
+                            <button
+                                onClick={() => setMode('customer-phone')}
+                                className="w-full flex items-center p-4 bg-white border-2 border-orange-100 rounded-xl hover:border-orange-500 hover:shadow-md transition-all group"
+                            >
+                                <div className="bg-orange-50 p-3 rounded-full mr-4 group-hover:bg-orange-500 transition-colors">
+                                    <Phone className="w-6 h-6 text-orange-500 group-hover:text-white" />
+                                </div>
+                                <div className="text-left">
+                                    <h3 className="font-bold text-gray-900">Customer Login</h3>
+                                    <p className="text-xs text-gray-500">Login with Phone Number</p>
+                                </div>
+                            </button>
+
+                            <button
+                                onClick={() => onLogin('admin')}
+                                className="w-full flex items-center p-4 bg-white border-2 border-gray-100 rounded-xl hover:border-gray-800 hover:shadow-md transition-all group"
+                            >
+                                <div className="bg-gray-50 p-3 rounded-full mr-4 group-hover:bg-gray-800 transition-colors">
+                                    <ShoppingBag className="w-6 h-6 text-gray-600 group-hover:text-white" />
+                                </div>
+                                <div className="text-left">
+                                    <h3 className="font-bold text-gray-900">Administrator Login</h3>
+                                    <p className="text-xs text-gray-500">Manage orders, check radius</p>
+                                </div>
+                            </button>
+                        </>
+                    )}
+
+                    {mode === 'customer-phone' && (
+                        <form onSubmit={handleSendOtp} className="space-y-4">
+                            <div className="text-left">
+                                <label className="text-xs font-bold text-gray-500 uppercase">Mobile Number</label>
+                                <div className="relative mt-1">
+                                    <span className="absolute left-3 top-3 text-gray-500 font-medium">+91</span>
+                                    <input
+                                        type="tel"
+                                        value={phoneNumber}
+                                        onChange={(e) => setPhoneNumber(e.target.value.replace(/\D/g, '').slice(0, 10))}
+                                        placeholder="Enter 10 digit number"
+                                        className="w-full pl-12 pr-4 py-3 bg-gray-50 border border-gray-200 rounded-xl focus:ring-2 focus:ring-orange-500 focus:outline-none font-medium text-lg tracking-wide"
+                                        required
+                                        autoFocus
+                                    />
+                                </div>
+                            </div>
+                            <button
+                                type="submit"
+                                disabled={isLoading || phoneNumber.length < 10}
+                                className="w-full py-3 bg-orange-600 text-white rounded-xl font-bold shadow-lg hover:bg-orange-700 disabled:opacity-50 disabled:cursor-not-allowed transition-all flex items-center justify-center gap-2"
+                            >
+                                {isLoading ? <Loader2 className="w-5 h-5 animate-spin" /> : <>Get OTP <ArrowRight className="w-4 h-4" /></>}
+                            </button>
+                        </form>
+                    )}
+
+                    {mode === 'customer-otp' && (
+                        <form onSubmit={handleVerifyOtp} className="space-y-4">
+                            <div className="text-center mb-6">
+                                <p className="text-sm text-gray-600">OTP sent to +91 {phoneNumber}</p>
+                                <button type="button" onClick={() => setMode('customer-phone')} className="text-xs text-orange-600 font-medium hover:underline">Change Number</button>
+                            </div>
+
+                            <div className="text-left">
+                                <label className="text-xs font-bold text-gray-500 uppercase">Enter OTP</label>
+                                <input
+                                    type="text"
+                                    value={otp}
+                                    onChange={(e) => setOtp(e.target.value.replace(/\D/g, '').slice(0, 4))}
+                                    placeholder="XXXX"
+                                    className="w-full p-3 text-center bg-gray-50 border border-gray-200 rounded-xl focus:ring-2 focus:ring-orange-500 focus:outline-none font-bold text-2xl tracking-[0.5em]"
+                                    required
+                                    autoFocus
+                                />
+                            </div>
+                            <button
+                                type="submit"
+                                className="w-full py-3 bg-orange-600 text-white rounded-xl font-bold shadow-lg hover:bg-orange-700 transition-all flex items-center justify-center gap-2"
+                            >
+                                Verify & Login
+                            </button>
+                            <div className="text-center">
+                                <button type="button" onClick={() => alert("OTP is 1234")} className="text-xs text-gray-400 hover:text-gray-600">Resend OTP</button>
+                            </div>
+                        </form>
+                    )}
+
                 </div>
 
                 <div className="mt-8 text-center">
@@ -251,7 +401,7 @@ function LoginScreen({ onLogin }) {
 }
 
 // --- Customer Interface ---
-function CustomerInterface({ db, userId, appId }) {
+function CustomerInterface({ db, userId, appId, customerPhone }) {
     const [cart, setCart] = useState({});
     const [location, setLocation] = useState(null);
     const [distance, setDistance] = useState(null);
@@ -342,7 +492,8 @@ function CustomerInterface({ db, userId, appId }) {
                 customerLocation: location,
                 customerAddress: address,
                 distance: distance.toFixed(2),
-                customerEmail: 'user@gmail.com' // Simulating the Gmail ID requirement
+                customerPhone: customerPhone, // Saving the phone number
+                customerEmail: 'Phone Login User'
             };
 
             // Using 'public' collection so Admin can see it easily in this demo
@@ -368,15 +519,15 @@ function CustomerInterface({ db, userId, appId }) {
                 <div className="flex items-center justify-between mb-4">
                     <h2 className="text-2xl font-bold text-gray-800">Daily Menu</h2>
                     <div className="flex gap-2">
-                        <button onClick={() => setActiveTab('menu')}
-                            className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${activeTab === 'menu' ?
-                                'bg-orange-500 text-white' : 'bg-white text-gray-600'}`}
+                        <button
+                            onClick={() => setActiveTab('menu')}
+                            className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${activeTab === 'menu' ? 'bg-orange-500 text-white' : 'bg-white text-gray-600'}`}
                         >
                             Order Food
                         </button>
-                        <button onClick={() => setActiveTab('orders')}
-                            className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${activeTab === 'orders' ?
-                                'bg-orange-500 text-white' : 'bg-white text-gray-600'}`}
+                        <button
+                            onClick={() => setActiveTab('orders')}
+                            className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${activeTab === 'orders' ? 'bg-orange-500 text-white' : 'bg-white text-gray-600'}`}
                         >
                             My Orders
                         </button>
@@ -386,12 +537,10 @@ function CustomerInterface({ db, userId, appId }) {
                 {activeTab === 'menu' ? (
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                         {MENU_ITEMS.map(item => (
-                            <div key={item.id}
-                                className="bg-white p-4 rounded-xl shadow-sm border border-gray-100 hover:shadow-md transition-shadow">
+                            <div key={item.id} className="bg-white p-4 rounded-xl shadow-sm border border-gray-100 hover:shadow-md transition-shadow">
                                 <div className="flex justify-between items-start">
                                     <div>
-                                        <span className={`inline-block px-2 py-0.5 rounded text-[10px] font-bold uppercase mb-2
-                            ${item.veg ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>
+                                        <span className={`inline-block px-2 py-0.5 rounded text-[10px] font-bold uppercase mb-2 ${item.veg ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>
                                             {item.veg ? 'Veg' : 'Non-Veg'}
                                         </span>
                                         <h3 className="font-bold text-lg text-gray-900">{item.name}</h3>
@@ -401,17 +550,14 @@ function CustomerInterface({ db, userId, appId }) {
                                     <div className="flex flex-col items-center gap-2">
                                         {cart[item.id] ? (
                                             <div className="flex items-center gap-3 bg-gray-50 rounded-lg p-1">
-                                                <button onClick={() => removeFromCart(item)} className="w-8 h-8 flex items-center
-                                justify-center bg-white rounded-md shadow-sm text-gray-600
-                                hover:text-red-500">-</button>
+                                                <button onClick={() => removeFromCart(item)} className="w-8 h-8 flex items-center justify-center bg-white rounded-md shadow-sm text-gray-600 hover:text-red-500">-</button>
                                                 <span className="font-medium text-gray-900">{cart[item.id]}</span>
-                                                <button onClick={() => addToCart(item)} className="w-8 h-8 flex items-center justify-center
-                                bg-white rounded-md shadow-sm text-gray-600 hover:text-green-500">+</button>
+                                                <button onClick={() => addToCart(item)} className="w-8 h-8 flex items-center justify-center bg-white rounded-md shadow-sm text-gray-600 hover:text-green-500">+</button>
                                             </div>
                                         ) : (
-                                            <button onClick={() => addToCart(item)}
-                                                className="px-4 py-2 bg-orange-50 text-orange-600 rounded-lg font-medium text-sm
-                            hover:bg-orange-100 transition-colors"
+                                            <button
+                                                onClick={() => addToCart(item)}
+                                                className="px-4 py-2 bg-orange-50 text-orange-600 rounded-lg font-medium text-sm hover:bg-orange-100 transition-colors"
                                             >
                                                 Add
                                             </button>
@@ -475,11 +621,12 @@ function CustomerInterface({ db, userId, appId }) {
                                             </h4>
 
                                             {!location ? (
-                                                <button onClick={checkLocation} disabled={isLocating}
-                                                    className="w-full py-2 bg-blue-100 text-blue-700 rounded-md text-sm font-medium hover:bg-blue-200 transition-colors flex items-center justify-center gap-2">
-                                                    {isLocating ?
-                                                        <Loader2 className="w-4 h-4 animate-spin" /> :
-                                                        <MapPin className="w-4 h-4" />}
+                                                <button
+                                                    onClick={checkLocation}
+                                                    disabled={isLocating}
+                                                    className="w-full py-2 bg-blue-100 text-blue-700 rounded-md text-sm font-medium hover:bg-blue-200 transition-colors flex items-center justify-center gap-2"
+                                                >
+                                                    {isLocating ? <Loader2 className="w-4 h-4 animate-spin" /> : <MapPin className="w-4 h-4" />}
                                                     Locate Me (Verify 10km)
                                                 </button>
                                             ) : (
@@ -488,13 +635,12 @@ function CustomerInterface({ db, userId, appId }) {
                                                         <span className="text-gray-500">Distance to Kitchen:</span>
                                                         <span className="font-bold">{distance?.toFixed(1)} km</span>
                                                     </div>
-                                                    {distance <= MAX_DELIVERY_RADIUS_KM ? (<div
-                                                        className="flex items-center gap-2 text-green-700 bg-green-100 px-3 py-2 rounded text-xs font-medium">
-                                                        <CheckCircle className="w-4 h-4" /> Delivery Available
-                                                    </div>
+                                                    {distance <= MAX_DELIVERY_RADIUS_KM ? (
+                                                        <div className="flex items-center gap-2 text-green-700 bg-green-100 px-3 py-2 rounded text-xs font-medium">
+                                                            <CheckCircle className="w-4 h-4" /> Delivery Available
+                                                        </div>
                                                     ) : (
-                                                        <div
-                                                            className="flex items-center gap-2 text-red-700 bg-red-100 px-3 py-2 rounded text-xs font-medium">
+                                                        <div className="flex items-center gap-2 text-red-700 bg-red-100 px-3 py-2 rounded text-xs font-medium">
                                                             <XCircle className="w-4 h-4" /> Too far (Max 10km)
                                                         </div>
                                                     )}
@@ -505,7 +651,9 @@ function CustomerInterface({ db, userId, appId }) {
                                         {/* Address Input */}
                                         <div>
                                             <label className="block text-xs font-medium text-gray-700 mb-1">Delivery Address</label>
-                                            <textarea value={address} onChange={(e) => setAddress(e.target.value)}
+                                            <textarea
+                                                value={address}
+                                                onChange={(e) => setAddress(e.target.value)}
                                                 placeholder="Flat No, Building, Street..."
                                                 className="w-full p-2 text-sm border border-gray-200 rounded-lg focus:ring-2 focus:ring-orange-500 focus:outline-none resize-none"
                                                 rows={2}
@@ -623,7 +771,8 @@ function AdminInterface({ db, appId }) {
                                 <div className="flex justify-between items-start mb-4">
                                     <div>
                                         <h3 className="font-bold text-lg text-gray-900 flex items-center gap-2">
-                                            {order.customerEmail}
+                                            <Phone className="w-5 h-5 text-gray-500" />
+                                            {order.customerPhone || order.customerEmail}
                                         </h3>
                                         <p className="text-sm text-gray-500 mt-1 flex items-center gap-1">
                                             <MapPin className="w-3 h-3" /> {order.distance} km away
