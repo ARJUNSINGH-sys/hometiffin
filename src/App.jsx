@@ -111,9 +111,24 @@ export default function TiffinApp() {
     const [db, setDb] = useState(null);
     const [appId, setAppId] = useState(null);
 
+    // Persistent Session ID for Guest Users (Fallback if Auth fails or is slow)
+    const [sessionUserId] = useState(() => {
+        const stored = localStorage.getItem('tiffin_session_id');
+        if (stored) return stored;
+        const newId = `guest_${Math.random().toString(36).substr(2, 9)}`;
+        localStorage.setItem('tiffin_session_id', newId);
+        return newId;
+    });
+
     // Initialize Firebase
     useEffect(() => {
         const initFirebase = async () => {
+            // Safety timeout to ensure app loads even if Firebase hangs
+            const safetyTimeout = setTimeout(() => {
+                console.warn("Firebase init timed out, forcing app load");
+                setLoading(false);
+            }, 3000);
+
             try {
                 // --- FIREBASE CONFIGURATION LOGIC ---
                 // 1. Try to get the environment config (for this preview window)
@@ -144,8 +159,9 @@ export default function TiffinApp() {
                 }
 
                 const authInstance = getAuth(app);
-                const dbInstance = getFirestore(app);
-                const currentAppId = window.__app_id || 'default-tiffin-app';
+                // User created a named database 'hometiffin' in the console
+                const dbInstance = getFirestore(app, 'hometiffin');
+                const currentAppId = userConfig.projectId;
 
                 setAuth(authInstance);
                 setDb(dbInstance);
@@ -173,13 +189,18 @@ export default function TiffinApp() {
                 }
 
                 const unsubscribe = onAuthStateChanged(authInstance, (u) => {
+                    clearTimeout(safetyTimeout);
                     setUser(u);
                     setLoading(false);
                 });
 
-                return () => unsubscribe();
+                return () => {
+                    clearTimeout(safetyTimeout);
+                    unsubscribe();
+                };
             } catch (error) {
                 console.error("Firebase init error:", error);
+                clearTimeout(safetyTimeout);
                 setLoading(false);
             }
         };
@@ -254,7 +275,7 @@ export default function TiffinApp() {
             {/* Main Content */}
             <main className="max-w-7xl mx-auto p-4 sm:p-6 lg:p-8">
                 {role === 'customer' ? (
-                    <CustomerInterface db={db} userId={user?.uid} appId={appId} customerPhone={customerPhone} />
+                    <CustomerInterface db={db} userId={user?.uid || sessionUserId} appId={appId} customerPhone={customerPhone} />
                 ) : (
                     <AdminInterface db={db} appId={appId} />
                 )}
@@ -265,10 +286,14 @@ export default function TiffinApp() {
 
 // --- Login Screen ---
 function LoginScreen({ onLogin }) {
-    const [mode, setMode] = useState('select'); // 'select', 'customer-phone', 'customer-otp'
+    const [mode, setMode] = useState('select'); // 'select', 'customer-phone', 'customer-otp', 'admin-login'
     const [phoneNumber, setPhoneNumber] = useState('');
     const [otp, setOtp] = useState('');
     const [isLoading, setIsLoading] = useState(false);
+
+    // Admin Login State
+    const [adminId, setAdminId] = useState('');
+    const [adminPass, setAdminPass] = useState('');
 
     const handleSendOtp = (e) => {
         e.preventDefault();
@@ -295,12 +320,28 @@ function LoginScreen({ onLogin }) {
         }
     };
 
+    const handleAdminLogin = (e) => {
+        e.preventDefault();
+        // Static Credential Check
+        if (adminId === 'home@123' && adminPass === 'tiffin&56') {
+            onLogin('admin');
+        } else {
+            alert("Invalid Administrator Credentials");
+        }
+    };
+
     return (
         <div className="min-h-screen bg-gradient-to-br from-orange-100 to-orange-50 flex flex-col justify-center items-center p-4">
             <div className="bg-white p-8 rounded-2xl shadow-xl w-full max-w-md border border-orange-100 relative">
                 {mode !== 'select' && (
                     <button
-                        onClick={() => { setMode('select'); setOtp(''); setPhoneNumber(''); }}
+                        onClick={() => {
+                            setMode('select');
+                            setOtp('');
+                            setPhoneNumber('');
+                            setAdminId('');
+                            setAdminPass('');
+                        }}
                         className="absolute top-4 left-4 text-gray-400 hover:text-gray-600 text-xs font-bold uppercase tracking-wider"
                     >
                         ← Back
@@ -335,7 +376,7 @@ function LoginScreen({ onLogin }) {
                             </button>
 
                             <button
-                                onClick={() => onLogin('admin')}
+                                onClick={() => setMode('admin-login')}
                                 className="w-full flex items-center p-4 bg-white border-2 border-gray-100 rounded-xl hover:border-gray-800 hover:shadow-md transition-all group"
                             >
                                 <div className="bg-gray-50 p-3 rounded-full mr-4 group-hover:bg-gray-800 transition-colors">
@@ -404,6 +445,40 @@ function LoginScreen({ onLogin }) {
                             <div className="text-center">
                                 <button type="button" onClick={() => alert("OTP is 1234")} className="text-xs text-gray-400 hover:text-gray-600">Resend OTP</button>
                             </div>
+                        </form>
+                    )}
+
+                    {mode === 'admin-login' && (
+                        <form onSubmit={handleAdminLogin} className="space-y-4">
+                            <div className="text-left">
+                                <label className="text-xs font-bold text-gray-500 uppercase">Admin ID</label>
+                                <input
+                                    type="text"
+                                    value={adminId}
+                                    onChange={(e) => setAdminId(e.target.value)}
+                                    placeholder="home@123"
+                                    className="w-full p-3 bg-gray-50 border border-gray-200 rounded-xl focus:ring-2 focus:ring-gray-800 focus:outline-none font-medium"
+                                    required
+                                    autoFocus
+                                />
+                            </div>
+                            <div className="text-left">
+                                <label className="text-xs font-bold text-gray-500 uppercase">Password</label>
+                                <input
+                                    type="password"
+                                    value={adminPass}
+                                    onChange={(e) => setAdminPass(e.target.value)}
+                                    placeholder="••••••••"
+                                    className="w-full p-3 bg-gray-50 border border-gray-200 rounded-xl focus:ring-2 focus:ring-gray-800 focus:outline-none font-medium"
+                                    required
+                                />
+                            </div>
+                            <button
+                                type="submit"
+                                className="w-full py-3 bg-gray-900 text-white rounded-xl font-bold shadow-lg hover:bg-gray-800 transition-all flex items-center justify-center gap-2"
+                            >
+                                Secure Login <ArrowRight className="w-4 h-4" />
+                            </button>
                         </form>
                     )}
 
@@ -510,47 +585,66 @@ function CustomerInterface({ db, userId, appId, customerPhone }) {
     };
 
     const placeOrder = async () => {
-        if (!db || !userId) return;
+        // userId is now guaranteed to be present (either from Auth or Session)
+        const currentUserId = userId;
+
+        if (!db) return;
+
         if (!address) {
             alert("Please enter your delivery address.");
             return;
         }
         if (!distance || distance > MAX_DELIVERY_RADIUS_KM) {
-            alert("We cannot deliver to this location. It is outside our service area.");
+            alert("We do not deliver to this location.");
             return;
         }
 
         setPlacingOrder(true);
-        try {
-            const orderItems = Object.entries(cart).map(([id, qty]) => {
+
+        const orderData = {
+            userId: currentUserId,
+            customerPhone: customerPhone || "Guest",
+            items: Object.entries(cart).map(([id, qty]) => {
                 const item = MENU_ITEMS.find(i => i.id === parseInt(id));
-                return { ...item, qty };
-            });
+                return { id, qty, name: item.name, price: item.price };
+            }),
+            total: getTotal(),
+            location,
+            distance,
+            customerAddress: address,
+            status: 'Pending',
+            createdAt: serverTimestamp()
+        };
 
-            const orderData = {
-                userId,
-                items: orderItems,
-                total: getTotal(),
-                status: 'Pending',
-                createdAt: serverTimestamp(),
-                customerLocation: location,
-                customerAddress: address,
-                distance: distance.toFixed(2),
-                customerPhone: customerPhone, // Saving the phone number
-                customerEmail: 'Phone Login User'
-            };
+        try {
+            // DEBUG: Verify DB Connection
+            console.log("Debug: Placing order to:", appId);
+            // alert(`Debug: Placing order. AppID: ${appId}`); // Uncomment if console is hard to reach
 
-            // Using 'public' collection so Admin can see it easily in this demo
-            // In a real app, you might duplicate this to a private user collection
-            await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'orders'), orderData);
+            // Race the DB call with a 2-second timer for optimistic UI feel
+            const MIN_LOAD_TIME = 2000;
+            const startTime = Date.now();
 
+            const dbPromise = addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'orders'), orderData);
+
+            // Wait for DB call
+            await dbPromise;
+
+            // Calculate remaining time to satisfy minimum load time
+            const elapsed = Date.now() - startTime;
+            const remaining = Math.max(0, MIN_LOAD_TIME - elapsed);
+
+            if (remaining > 0) {
+                await new Promise(resolve => setTimeout(resolve, remaining));
+            }
+
+            console.log("Order placed successfully!");
             setCart({});
-            setAddress('');
-            alert("Order placed successfully!");
-            setActiveTab('orders');
-        } catch (e) {
-            console.error(e);
-            alert("Error placing order.");
+            alert("Order placed! Waiting for acceptance by kitchen.");
+            setActiveTab('orders'); // Switch to order history
+        } catch (error) {
+            console.error("Error placing order:", error);
+            alert(`Failed to place order.\nError: ${error.message}\nCode: ${error.code}`);
         } finally {
             setPlacingOrder(false);
         }
@@ -612,150 +706,153 @@ function CustomerInterface({ db, userId, appId, customerPhone }) {
                         ))}
                     </div>
                 ) : (
-                    <CustomerOrders db={db} userId={userId} appId={appId} />
+                    <CustomerOrders db={db} userId={userId} appId={appId} customerPhone={customerPhone} />
                 )}
             </div>
 
             {/* Cart & Checkout Sidebar */}
-            {activeTab === 'menu' && (
-                <div className="lg:col-span-1">
-                    <div className="bg-white rounded-xl shadow-lg border border-gray-100 sticky top-24 overflow-hidden">
-                        <div className="p-4 bg-gray-900 text-white flex items-center justify-between">
-                            <h3 className="font-bold flex items-center gap-2">
-                                <ShoppingBag className="w-5 h-5" /> Your Cart
-                            </h3>
-                            <span className="text-sm bg-gray-700 px-2 py-1 rounded-md">{Object.keys(cart).length} items</span>
-                        </div>
+            {
+                activeTab === 'menu' && (
+                    <div className="lg:col-span-1">
+                        <div className="bg-white rounded-xl shadow-lg border border-gray-100 sticky top-24 overflow-hidden">
+                            <div className="p-4 bg-gray-900 text-white flex items-center justify-between">
+                                <h3 className="font-bold flex items-center gap-2">
+                                    <ShoppingBag className="w-5 h-5" /> Your Cart
+                                </h3>
+                                <span className="text-sm bg-gray-700 px-2 py-1 rounded-md">{Object.keys(cart).length} items</span>
+                            </div>
 
-                        <div className="p-6 space-y-6">
-                            {Object.keys(cart).length === 0 ? (
-                                <div className="text-center py-8 text-gray-400">
-                                    <p>Your tiffin box is empty.</p>
-                                    <p className="text-sm">Add some yummy food!</p>
-                                </div>
-                            ) : (
-                                <>
-                                    <div className="space-y-3 max-h-60 overflow-y-auto pr-2">
-                                        {Object.entries(cart).map(([id, qty]) => {
-                                            const item = MENU_ITEMS.find(i => i.id === parseInt(id));
-                                            return (
-                                                <div key={id} className="flex justify-between items-center text-sm">
-                                                    <div className="flex items-center gap-2">
-                                                        <span className="text-gray-400">x{qty}</span>
-                                                        <span className="text-gray-800 font-medium">{item.name}</span>
+                            <div className="p-6 space-y-6">
+                                {Object.keys(cart).length === 0 ? (
+                                    <div className="text-center py-8 text-gray-400">
+                                        <p>Your tiffin box is empty.</p>
+                                        <p className="text-sm">Add some yummy food!</p>
+                                    </div>
+                                ) : (
+                                    <>
+                                        <div className="space-y-3 max-h-60 overflow-y-auto pr-2">
+                                            {Object.entries(cart).map(([id, qty]) => {
+                                                const item = MENU_ITEMS.find(i => i.id === parseInt(id));
+                                                return (
+                                                    <div key={id} className="flex justify-between items-center text-sm">
+                                                        <div className="flex items-center gap-2">
+                                                            <span className="text-gray-400">x{qty}</span>
+                                                            <span className="text-gray-800 font-medium">{item.name}</span>
+                                                        </div>
+                                                        <span className="text-gray-900">₹{item.price * qty}</span>
                                                     </div>
-                                                    <span className="text-gray-900">₹{item.price * qty}</span>
-                                                </div>
-                                            );
-                                        })}
-                                    </div>
-
-                                    <div className="border-t border-gray-100 pt-4 space-y-2">
-                                        <div className="flex justify-between font-bold text-lg text-gray-900">
-                                            <span>Total</span>
-                                            <span>₹{getTotal()}</span>
+                                                );
+                                            })}
                                         </div>
-                                    </div>
 
-                                    <div className="space-y-4 pt-4 border-t border-gray-100">
-                                        {/* Delivery Check Section */}
-                                        <div className="bg-blue-50 p-4 rounded-lg">
-                                            <h4 className="font-medium text-blue-900 text-sm mb-2 flex items-center gap-2">
-                                                <Navigation className="w-4 h-4" /> Delivery Check
-                                            </h4>
+                                        <div className="border-t border-gray-100 pt-4 space-y-2">
+                                            <div className="flex justify-between font-bold text-lg text-gray-900">
+                                                <span>Total</span>
+                                                <span>₹{getTotal()}</span>
+                                            </div>
+                                        </div>
 
-                                            <div className="flex gap-2 mb-3">
-                                                <button
-                                                    onClick={checkLocation}
-                                                    disabled={isLocating}
-                                                    className="flex-1 py-2 bg-blue-100 text-blue-700 rounded-md text-xs font-bold hover:bg-blue-200 transition-colors flex items-center justify-center gap-1"
-                                                >
-                                                    {isLocating ? <Loader2 className="w-3 h-3 animate-spin" /> : <MapPin className="w-3 h-3" />}
-                                                    Auto-Detect
-                                                </button>
-                                                <button
-                                                    onClick={() => {
-                                                        console.log("Map button clicked");
-                                                        setShowMap(true);
-                                                    }}
-                                                    className="flex-1 py-2 bg-orange-100 text-orange-700 rounded-md text-xs font-bold hover:bg-orange-200 transition-colors flex items-center justify-center gap-1"
-                                                >
-                                                    <MapPin className="w-3 h-3" /> Select on Map
-                                                </button>
+                                        <div className="space-y-4 pt-4 border-t border-gray-100">
+                                            {/* Delivery Check Section */}
+                                            <div className="bg-blue-50 p-4 rounded-lg">
+                                                <h4 className="font-medium text-blue-900 text-sm mb-2 flex items-center gap-2">
+                                                    <Navigation className="w-4 h-4" /> Delivery Check
+                                                </h4>
+
+                                                <div className="flex gap-2 mb-3">
+                                                    <button
+                                                        onClick={checkLocation}
+                                                        disabled={isLocating}
+                                                        className="flex-1 py-2 bg-blue-100 text-blue-700 rounded-md text-xs font-bold hover:bg-blue-200 transition-colors flex items-center justify-center gap-1"
+                                                    >
+                                                        {isLocating ? <Loader2 className="w-3 h-3 animate-spin" /> : <MapPin className="w-3 h-3" />}
+                                                        Auto-Detect
+                                                    </button>
+                                                    <button
+                                                        onClick={() => {
+                                                            console.log("Map button clicked");
+                                                            setShowMap(true);
+                                                        }}
+                                                        className="flex-1 py-2 bg-orange-100 text-orange-700 rounded-md text-xs font-bold hover:bg-orange-200 transition-colors flex items-center justify-center gap-1"
+                                                    >
+                                                        <MapPin className="w-3 h-3" /> Select on Map
+                                                    </button>
+                                                </div>
+
+                                                {location && (
+                                                    <div className="space-y-2 mb-2">
+                                                        <div className="flex items-center justify-between text-xs">
+                                                            <span className="text-gray-500">Distance to Kitchen:</span>
+                                                            <span className="font-bold">{distance?.toFixed(1)} km</span>
+                                                        </div>
+                                                        {distance <= MAX_DELIVERY_RADIUS_KM ? (
+                                                            <div className="flex items-center gap-2 text-green-700 bg-green-100 px-3 py-2 rounded text-xs font-medium">
+                                                                <CheckCircle className="w-4 h-4" /> Delivery Available
+                                                            </div>
+                                                        ) : (
+                                                            <div className="flex items-center gap-2 text-red-700 bg-red-100 px-3 py-2 rounded text-xs font-medium">
+                                                                <XCircle className="w-4 h-4" /> Too far (Max 10km)
+                                                            </div>
+                                                        )}
+                                                    </div>
+                                                )}
                                             </div>
 
-                                            {location && (
-                                                <div className="space-y-2 mb-2">
-                                                    <div className="flex items-center justify-between text-xs">
-                                                        <span className="text-gray-500">Distance to Kitchen:</span>
-                                                        <span className="font-bold">{distance?.toFixed(1)} km</span>
-                                                    </div>
-                                                    {distance <= MAX_DELIVERY_RADIUS_KM ? (
-                                                        <div className="flex items-center gap-2 text-green-700 bg-green-100 px-3 py-2 rounded text-xs font-medium">
-                                                            <CheckCircle className="w-4 h-4" /> Delivery Available
-                                                        </div>
-                                                    ) : (
-                                                        <div className="flex items-center gap-2 text-red-700 bg-red-100 px-3 py-2 rounded text-xs font-medium">
-                                                            <XCircle className="w-4 h-4" /> Too far (Max 10km)
-                                                        </div>
-                                                    )}
-                                                </div>
-                                            )}
-                                        </div>
+                                            {/* Address Input */}
+                                            <div>
+                                                <label className="block text-xs font-medium text-gray-700 mb-1">Delivery Address</label>
+                                                <textarea
+                                                    value={address}
+                                                    onChange={(e) => setAddress(e.target.value)}
+                                                    placeholder="Flat No, Building, Street..."
+                                                    className="w-full p-2 text-sm border border-gray-200 rounded-lg focus:ring-2 focus:ring-orange-500 focus:outline-none resize-none"
+                                                    rows={2}
+                                                />
+                                            </div>
 
-                                        {/* Address Input */}
-                                        <div>
-                                            <label className="block text-xs font-medium text-gray-700 mb-1">Delivery Address</label>
-                                            <textarea
-                                                value={address}
-                                                onChange={(e) => setAddress(e.target.value)}
-                                                placeholder="Flat No, Building, Street..."
-                                                className="w-full p-2 text-sm border border-gray-200 rounded-lg focus:ring-2 focus:ring-orange-500 focus:outline-none resize-none"
-                                                rows={2}
-                                            />
+                                            <button
+                                                onClick={placeOrder}
+                                                disabled={placingOrder || !distance || distance > MAX_DELIVERY_RADIUS_KM || !address}
+                                                className="w-full py-3 bg-orange-600 text-white rounded-lg font-bold shadow-md hover:bg-orange-700 disabled:bg-gray-300 disabled:cursor-not-allowed transition-all flex items-center justify-center gap-2"
+                                            >
+                                                {placingOrder ? <Loader2 className="w-5 h-5 animate-spin" /> : "Place Order"}
+                                            </button>
                                         </div>
-
-                                        <button
-                                            onClick={placeOrder}
-                                            disabled={placingOrder || !distance || distance > MAX_DELIVERY_RADIUS_KM || !address}
-                                            className="w-full py-3 bg-orange-600 text-white rounded-lg font-bold shadow-md hover:bg-orange-700 disabled:bg-gray-300 disabled:cursor-not-allowed transition-all flex items-center justify-center gap-2"
-                                        >
-                                            {placingOrder ? <Loader2 className="w-5 h-5 animate-spin" /> : "Place Order"}
-                                        </button>
-                                    </div>
-                                </>
-                            )}
+                                    </>
+                                )}
+                            </div>
                         </div>
                     </div>
-                </div>
-            )}
+                )
+            }
 
             {/* Map Modal */}
-            {showMap && (
-                <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm">
-                    <div className="bg-white w-full max-w-2xl rounded-2xl overflow-hidden shadow-2xl flex flex-col h-[80vh]">
-                        <div className="p-4 bg-orange-600 text-white flex justify-between items-center">
-                            <h3 className="font-bold">Select Delivery Location</h3>
-                            <button onClick={() => setShowMap(false)} className="p-1 hover:bg-orange-700 rounded-full">
-                                <XCircle className="w-6 h-6" />
-                            </button>
-                        </div>
-                        <div className="flex-1 relative">
-                            <MapPicker
-                                center={location || KITCHEN_LOCATION}
-                                onConfirm={(lat, lng) => handleLocationSelect(lat, lng)}
-                            />
-                        </div>
-                        <div className="p-3 bg-gray-50 text-xs text-gray-500 text-center">
-                            Drag the marker or click on the map to pinpoint your location.
+            {
+                showMap && (
+                    <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm">
+                        <div className="bg-white w-full max-w-2xl rounded-2xl overflow-hidden shadow-2xl flex flex-col h-[80vh]">
+                            <div className="p-4 bg-orange-600 text-white flex justify-between items-center">
+                                <h3 className="font-bold">Select Delivery Location</h3>
+                                <button onClick={() => setShowMap(false)} className="p-1 hover:bg-orange-700 rounded-full">
+                                    <XCircle className="w-6 h-6" />
+                                </button>
+                            </div>
+                            <div className="flex-1 relative">
+                                <MapPicker
+                                    center={location || KITCHEN_LOCATION}
+                                    onConfirm={(lat, lng) => handleLocationSelect(lat, lng)}
+                                />
+                            </div>
+                            <div className="p-3 bg-gray-50 text-xs text-gray-500 text-center">
+                                Drag the marker or click on the map to pinpoint your location.
+                            </div>
                         </div>
                     </div>
-                </div>
-            )}
+                )
+            }
         </div>
     );
 }
-
 
 // --- Map Picker Component ---
 function MapPicker({ center, onConfirm }) {
@@ -802,12 +899,17 @@ function MapPicker({ center, onConfirm }) {
 }
 
 // --- Customer Order History ---
-function CustomerOrders({ db, userId, appId }) {
+function CustomerOrders({ db, userId, appId, customerPhone }) {
     const [orders, setOrders] = useState([]);
     const [loading, setLoading] = useState(true);
 
     useEffect(() => {
-        if (!db || !userId) return;
+        if (!db) return;
+
+        if (!userId && !customerPhone) {
+            setLoading(false);
+            return;
+        }
 
         // In a real app, query 'where("userId", "==", userId)'
         // Here we filter client side for simplicity with the 'public' collection pattern
@@ -815,7 +917,7 @@ function CustomerOrders({ db, userId, appId }) {
 
         const unsubscribe = onSnapshot(q, (snapshot) => {
             const allOrders = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-            setOrders(allOrders.filter(o => o.userId === userId));
+            setOrders(allOrders.filter(o => o.userId === userId || (customerPhone && o.customerPhone === customerPhone)));
             setLoading(false);
         }, (error) => {
             console.error("Error fetching orders:", error);
@@ -823,7 +925,7 @@ function CustomerOrders({ db, userId, appId }) {
         });
 
         return () => unsubscribe();
-    }, [db, userId, appId]);
+    }, [db, userId, appId, customerPhone]);
 
     if (loading) return <div className="p-8 text-center text-gray-500">Loading history...</div>;
 
@@ -845,7 +947,7 @@ function CustomerOrders({ db, userId, appId }) {
                                 {order.items.map(i => `${i.qty}x ${i.name}`).join(', ')}
                             </p>
                             <div className="text-xs text-gray-400 flex items-center gap-4">
-                                <span className="flex items-center gap-1"><Clock className="w-3 h-3" /> {new Date(order.createdAt?.seconds * 1000).toLocaleDateString()}</span>
+                                <span className="flex items-center gap-1"><Clock className="w-3 h-3" /> {order.createdAt ? new Date(order.createdAt.seconds * 1000).toLocaleDateString() : 'Just now'}</span>
                                 <span>Total: ₹{order.total}</span>
                             </div>
                         </div>
@@ -980,41 +1082,36 @@ function AdminInterface({ db, appId }) {
                 </div>
             </div>
 
-            {/* Admin Stats Sidebar */}
+            {/* Sidebar Stats */}
             <div className="lg:col-span-1 space-y-6">
                 <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-200">
-                    <h3 className="font-bold text-gray-900 mb-4">Kitchen Status</h3>
-                    <div className="flex items-center gap-3 mb-6">
-                        <div className="w-3 h-3 bg-green-500 rounded-full animate-pulse"></div>
-                        <span className="text-sm text-green-700 font-medium">Accepting Orders</span>
+                    <h3 className="font-bold text-gray-800 mb-4">Kitchen Status</h3>
+                    <div className="flex items-center gap-2 text-green-600 font-medium mb-6">
+                        <span className="w-2 h-2 bg-green-500 rounded-full animate-pulse"></span>
+                        Accepting Orders
                     </div>
 
                     <div className="space-y-4">
-                        <div className="p-4 bg-orange-50 rounded-lg">
-                            <p className="text-xs text-orange-600 uppercase font-bold">Total Revenue</p>
-                            <p className="text-2xl font-bold text-gray-900">
-                                ₹{orders.reduce((acc, curr) => acc + curr.total, 0)}
-                            </p>
+                        <div className="bg-orange-50 p-4 rounded-lg">
+                            <p className="text-xs text-orange-600 font-bold uppercase tracking-wide">Total Revenue</p>
+                            <p className="text-2xl font-bold text-orange-900">₹{orders.reduce((acc, curr) => acc + curr.total, 0)}</p>
                         </div>
-                        <div className="p-4 bg-blue-50 rounded-lg">
-                            <p className="text-xs text-blue-600 uppercase font-bold">Active Orders</p>
-                            <p className="text-2xl font-bold text-gray-900">
-                                {orders.filter(o => o.status !== 'Delivered' && o.status !== 'Cancelled').length}
-                            </p>
+
+                        <div className="bg-blue-50 p-4 rounded-lg">
+                            <p className="text-xs text-blue-600 font-bold uppercase tracking-wide">Active Orders</p>
+                            <p className="text-2xl font-bold text-blue-900">{orders.filter(o => o.status !== 'Completed' && o.status !== 'Cancelled').length}</p>
                         </div>
                     </div>
                 </div>
 
                 <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-200">
-                    <h3 className="font-bold text-gray-900 mb-2">Service Zone</h3>
-                    <p className="text-sm text-gray-500 mb-4">10km radius from Connaught Place</p>
-                    {/* Mock Map View */}
-                    <div className="aspect-square bg-gray-100 rounded-lg relative overflow-hidden flex items-center justify-center border border-gray-300">
-                        <div className="absolute inset-0 bg-opacity-10 bg-blue-500 rounded-full scale-75 border-2 border-blue-300 border-dashed"></div>
-                        <div className="absolute inset-0 flex items-center justify-center">
-                            <div className="w-4 h-4 bg-red-500 rounded-full shadow-lg border-2 border-white z-10"></div>
+                    <h3 className="font-bold text-gray-800 mb-4">Service Zone</h3>
+                    <p className="text-xs text-gray-500 mb-4">30km radius from Kitchen HQ</p>
+                    <div className="aspect-square bg-gray-50 rounded-lg flex items-center justify-center border border-gray-100 relative overflow-hidden">
+                        <div className="w-40 h-40 border-2 border-dashed border-blue-300 rounded-full flex items-center justify-center bg-blue-50/50">
+                            <div className="w-2 h-2 bg-red-500 rounded-full"></div>
                         </div>
-                        <p className="absolute bottom-2 text-xs text-gray-500 bg-white/80 px-2 py-1 rounded">Map Preview (Mock)</p>
+                        <span className="absolute bottom-2 text-[10px] text-gray-400">Map Preview (Mock)</span>
                     </div>
                 </div>
             </div>
