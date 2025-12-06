@@ -42,7 +42,10 @@ import {
     signInAnonymously,
     onAuthStateChanged,
     signOut,
-    signInWithCustomToken
+    signInWithCustomToken,
+    RecaptchaVerifier,
+    signInWithPhoneNumber,
+    PhoneAuthProvider
 } from 'firebase/auth';
 import {
     getFirestore,
@@ -131,10 +134,7 @@ export default function TiffinApp() {
 
             try {
                 // --- FIREBASE CONFIGURATION LOGIC ---
-                // 1. Try to get the environment config (for this preview window)
-                const envConfig = window.__firebase_config ? JSON.parse(window.__firebase_config) : null;
-
-                // 2. Define your specific project config (for when you deploy to Vercel/Netlify)
+                // Define your specific project config
                 const userConfig = {
                     apiKey: "AIzaSyAqtnAEs0ztHVB0EcgpgUzWJeCmLKztpis",
                     authDomain: "hometiffin-170a6.firebaseapp.com",
@@ -146,9 +146,8 @@ export default function TiffinApp() {
                 };
 
                 // 3. Select the valid config. 
-                // We prefer envConfig in this preview to prevent 'auth/configuration-not-found' errors 
-                // caused by domain restrictions or missing auth providers in the user's project console.
-                const firebaseConfig = envConfig || userConfig;
+                // We force userConfig to ensure we use the correct credentials
+                const firebaseConfig = userConfig;
 
                 // Prevent multiple initializations error
                 let app;
@@ -232,7 +231,7 @@ export default function TiffinApp() {
     }
 
     if (view === 'login') {
-        return <LoginScreen onLogin={handleLogin} />;
+        return <LoginScreen onLogin={handleLogin} auth={auth} />;
     }
 
     return (
@@ -285,7 +284,20 @@ export default function TiffinApp() {
 }
 
 // --- Login Screen ---
-function LoginScreen({ onLogin }) {
+function LoginScreen({ onLogin, auth }) {
+    useEffect(() => {
+        // Cleanup global verifier on unmount to prevent stale DOM references
+        return () => {
+            if (window.recaptchaVerifier) {
+                try {
+                    window.recaptchaVerifier.clear();
+                } catch (e) {
+                    console.warn("Failed to clear recaptcha:", e);
+                }
+                window.recaptchaVerifier = null;
+            }
+        };
+    }, []);
     const [mode, setMode] = useState('select'); // 'select', 'customer-phone', 'customer-otp', 'admin-login'
     const [phoneNumber, setPhoneNumber] = useState('');
     const [otp, setOtp] = useState('');
@@ -295,28 +307,80 @@ function LoginScreen({ onLogin }) {
     const [adminId, setAdminId] = useState('');
     const [adminPass, setAdminPass] = useState('');
 
-    const handleSendOtp = (e) => {
+    // --- Phone Auth Logic ---
+    const setupRecaptcha = () => {
+        if (!window.recaptchaVerifier) {
+            window.recaptchaVerifier = new RecaptchaVerifier(auth, 'recaptcha-container', {
+                'size': 'invisible',
+                'callback': (response) => {
+                    // reCAPTCHA solved, allow signInWithPhoneNumber.
+                    // callback logic if needed
+                },
+                'expired-callback': () => {
+                    // Response expired. Ask user to solve reCAPTCHA again.
+                    // Reset if needed
+                }
+            });
+        }
+    };
+
+    const handleSendOtp = async (e) => {
         e.preventDefault();
         if (phoneNumber.length < 10) {
             alert("Please enter a valid 10-digit mobile number");
             return;
         }
+
         setIsLoading(true);
-        // Simulate API call delay
-        setTimeout(() => {
+        setupRecaptcha();
+
+        const appVerifier = window.recaptchaVerifier;
+        const formatPh = "+91" + phoneNumber;
+
+        try {
+            const confirmationResult = await signInWithPhoneNumber(auth, formatPh, appVerifier);
+            window.confirmationResult = confirmationResult;
             setIsLoading(false);
             setMode('customer-otp');
-            // SIMULATED SMS
-            alert(`HomeTiffin: Your OTP is 1234`);
-        }, 1500);
+            // alert(`OTP sent to ${formatPh}`); // Optional feedback
+        } catch (error) {
+            console.error("Error sending OTP:", error);
+            setIsLoading(false);
+            if (error.code === 'auth/invalid-phone-number') {
+                alert("The phone number is not valid.");
+            } else if (error.code === 'auth/quota-exceeded') {
+                alert("SMS quota exceeded. Please try again later.");
+            } else {
+                alert("Failed to send OTP. Please try again. Ensure 'Phone' sign-in is enabled in Firebase Console.");
+            }
+            // Reset recaptcha if needed
+            if (window.recaptchaVerifier) {
+                window.recaptchaVerifier.clear();
+                window.recaptchaVerifier = null;
+            }
+        }
     };
 
-    const handleVerifyOtp = (e) => {
+    const handleVerifyOtp = async (e) => {
         e.preventDefault();
-        if (otp === '1234') {
+        setIsLoading(true); // Reuse loading state for verification too
+
+        if (otp.length !== 6) {
+            alert("Please enter the 6-digit OTP code.");
+            setIsLoading(false);
+            return;
+        }
+
+        try {
+            const result = await window.confirmationResult.confirm(otp);
+            const user = result.user;
+            // Successful User Sign In
+            setIsLoading(false);
             onLogin('customer', phoneNumber);
-        } else {
-            alert("Invalid OTP. Please try '1234'");
+        } catch (error) {
+            console.error("Error verifying OTP:", error);
+            setIsLoading(false);
+            alert("Invalid OTP. Please try again.");
         }
     };
 
@@ -341,6 +405,11 @@ function LoginScreen({ onLogin }) {
                             setPhoneNumber('');
                             setAdminId('');
                             setAdminPass('');
+                            // Clean up recaptcha if going back
+                            if (window.recaptchaVerifier) {
+                                window.recaptchaVerifier.clear();
+                                window.recaptchaVerifier = null;
+                            }
                         }}
                         className="absolute top-4 left-4 text-gray-400 hover:text-gray-600 text-xs font-bold uppercase tracking-wider"
                     >
@@ -407,6 +476,7 @@ function LoginScreen({ onLogin }) {
                                     />
                                 </div>
                             </div>
+                            <div id="recaptcha-container"></div>
                             <button
                                 type="submit"
                                 disabled={isLoading || phoneNumber.length < 10}
@@ -421,7 +491,14 @@ function LoginScreen({ onLogin }) {
                         <form onSubmit={handleVerifyOtp} className="space-y-4">
                             <div className="text-center mb-6">
                                 <p className="text-sm text-gray-600">OTP sent to +91 {phoneNumber}</p>
-                                <button type="button" onClick={() => setMode('customer-phone')} className="text-xs text-orange-600 font-medium hover:underline">Change Number</button>
+                                <button type="button" onClick={() => {
+                                    setMode('customer-phone');
+                                    setOtp('');
+                                    if (window.recaptchaVerifier) {
+                                        window.recaptchaVerifier.clear();
+                                        window.recaptchaVerifier = null;
+                                    }
+                                }} className="text-xs text-orange-600 font-medium hover:underline">Change Number</button>
                             </div>
 
                             <div className="text-left">
@@ -429,8 +506,8 @@ function LoginScreen({ onLogin }) {
                                 <input
                                     type="text"
                                     value={otp}
-                                    onChange={(e) => setOtp(e.target.value.replace(/\D/g, '').slice(0, 4))}
-                                    placeholder="XXXX"
+                                    onChange={(e) => setOtp(e.target.value.replace(/\D/g, '').slice(0, 6))}
+                                    placeholder="XXXXXX"
                                     className="w-full p-3 text-center bg-gray-50 border border-gray-200 rounded-xl focus:ring-2 focus:ring-orange-500 focus:outline-none font-bold text-2xl tracking-[0.5em]"
                                     required
                                     autoFocus
@@ -438,13 +515,11 @@ function LoginScreen({ onLogin }) {
                             </div>
                             <button
                                 type="submit"
-                                className="w-full py-3 bg-orange-600 text-white rounded-xl font-bold shadow-lg hover:bg-orange-700 transition-all flex items-center justify-center gap-2"
+                                disabled={isLoading}
+                                className="w-full py-3 bg-orange-600 text-white rounded-xl font-bold shadow-lg hover:bg-orange-700 disabled:opacity-50 transition-all flex items-center justify-center gap-2"
                             >
-                                Verify & Login
+                                {isLoading ? <Loader2 className="w-5 h-5 animate-spin" /> : "Verify & Login"}
                             </button>
-                            <div className="text-center">
-                                <button type="button" onClick={() => alert("OTP is 1234")} className="text-xs text-gray-400 hover:text-gray-600">Resend OTP</button>
-                            </div>
                         </form>
                     )}
 
